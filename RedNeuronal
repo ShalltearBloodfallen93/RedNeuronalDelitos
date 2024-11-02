@@ -1,0 +1,136 @@
+# Red neuronal para predecir tipos de delitos en funcion de caracteristicas como hora, mes, dia, fecha, coordenadas, minutos de medianoche etc
+# algunas caracteristicas se construyen apartir de las originales para enriquecer el funcionamiento del modelo
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder, StandardScaler #codificar y escalar datos
+from sklearn.model_selection import train_test_split #dividir datos
+from tensorflow.keras.models import Sequential # linealidad neuronas
+from tensorflow.keras.layers import Dense, Dropout # conexion de neuronas y apagado
+from tensorflow.keras.callbacks import EarlyStopping # detencion prematura
+from tensorflow.keras.optimizers import Adam # optimizador
+
+# cargar el archivo csv ya tienen una cierta limpieza
+df = pd.read_csv("av_limpioyfiltrado.csv", encoding='latin1')#establecer la codificacion para que no salga error de utf8, permite leer caracteres especiales
+
+# filtrar tipos de delitos, solo los de interes (7 delitos)
+delitos_conservar = [
+    "ACOSO SEXUAL", "DISPAROS DE ARMA DE FUEGO", "FEMINICIDIO", "HOMICIDIO CULPOSO", "LESIONES CULPOSAS", "ROBO A REPARTIDOR Y VEHICULO CON VIOLENCIA",
+    "ROBO A TRANSEUNTE EN VIA PUBLICA CON VIOLENCIA"
+]
+
+# se filtran las filas y se mantienen solo las de interes que estan dentro de la variable delitos_conservar
+df = df[df['delito'].isin(delitos_conservar)]
+
+# guardar el csv filtrado sin indice (es opcional si queremos usarlo para algo despues)
+df.to_csv("delitos_filtrados.csv", index=False)
+
+# formatear columnas de fecha para su uso correcto a datetime cuando se manejan fechas
+df['fecha'] = pd.to_datetime(df['fecha'], format='%d/%m/%Y')# se especifica el formato (dia/mes/año) para convertir en un objeto de tipo datetime
+
+# funcion para limpiar y convertir la hora del df (contiene a. m. y p. m.) y manerjar errores para que sean Nat
+def limpiar_hora(hora):
+    return pd.to_datetime(hora.replace(" a. m.", " AM").replace(" p. m.", " PM"), format='%I:%M:%S %p', errors='coerce')
+# se reemplaza las abreviaturas"a. m." y "p. m." por el formato AM y PM para que coindica con el formato adecuado que requiere la conversion
+# se convierte la cadena de texto por un objeto de tipo datetime
+# si hay formatos inconsistentes en vez de mandar error se convierten en Nat: not a time
+# ejemplo de formato limpio: 9:40:00
+# no se considera zona horaria actual, se asume que todos los datos tienen la misma zona horaria
+
+# aplicar la funcion de limpieza y conversion a la columna hora del dataframe
+df['hora_limpia'] = df['hora'].apply(limpiar_hora) #se crea una nueva columna llamada hora_limpia con el formato adecuado
+
+# extraer componentes de fecha y hora de la columna fecha
+df['Año'] = df['fecha'].dt.year # extrae el año de la columna fecha
+df['Mes'] = df['fecha'].dt.month #extrae el mes de la columna fecha
+df['Día'] = df['fecha'].dt.day # extrae el dia de la columna fecha
+df['Día_semana'] = df['fecha'].dt.dayofweek #extrae el dia de la semana de la columna fecha (0, 1, 2, 3, 4, 5, 6) = (lunes, martes, miercoles... etc)
+df['Minutos_desde_medianoche'] = df['hora_limpia'].dt.hour * 60 + df['hora_limpia'].dt.minute
+# se extra la hora y los minutos de la columna hora_limpia
+# se multiplica la hora por 60 para convertirla a minutos y despues se le suma los minutos = minutos desde la media noche
+# ejemplo: 4:30:00 AM = (4*60) + 30 ent; minutos desde la media noche = 270 mins
+
+# codificar variable delito ya que es una variable categorica usando condificador de etiquetas
+le = LabelEncoder() #se crea el objeto codificador
+df['delito_codificado'] = le.fit_transform(df['delito'])
+# se ajustan y transforman los datos de delito en una nueva variable llamada delito_codificado
+
+# escalar valores numericos para evitar desajuste en el modelo
+scaler = StandardScaler() # se usa la estandarizacion las cual hace que los datos tengan media de 0 y desv est de 1 y se asigna en la misma columna
+df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', 'latitud', 'longitud']] = scaler.fit_transform(
+    df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', 'latitud', 'longitud']]
+)
+
+# dividir datos en conjuntos de entrenamiento y prueba
+X = df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', "latitud", "longitud"]]# caracteristicas
+y = df['delito_codificado']# variable objetivo
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)# aseguramos el mismo cojunto aleat paray 20% de prueba
+# aseguramos el mismo cojunto de datos aleatorio para cada ejecucion y .20 del total de datos para el conjunto de prueba
+
+# definir el modelo de red neuronal secuancial densa
+model = Sequential() # permite crear una conexion lineal de neurona en neurona para identificar patrones con un orden natural
+model.add(Dense(128, input_dim=X_train.shape[1], activation='relu')) #128 neuronas, entrada = dimension de los datos de entrenamiento [columna]
+model.add(Dropout(0.15)) # apaga el 15% de las neurona aleatoriamente para evitar el sobreajuste o abuso de dichas neuronas
+model.add(Dense(64, activation='relu')) # 64 neuronas, funcion de activacion "relu"
+model.add(Dropout(0.1)) # apaga el 10% de las neruonas aleatoriamente para evitar el sobreajuste o abuso de dichas neuronas
+model.add(Dense(32, activation='relu')) # 32 neuronas, funcion de activacion "relu"
+model.add(Dense(len(le.classes_), activation='softmax')) # neuronas = numero de clases (7), funcion de activacion "softmax" para problemas de clasificacion
+
+# compilar el modelo usando Adam con tasa de aprendizaje, perdida y metrica de precision
+model.compile(optimizer=Adam(learning_rate=0.0005), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+# el optimizador Adam ajusta  la tasa de aprendizaje en pasos de 0.0005 durante el entrenamiento para mejorarlo
+# funcion de perdida loss: compara la probabilidad de cada clase predicha contra la clase real
+# metrica de presicion para evaluar el desempeño durante el entrenamiento
+
+# early stopping para evitar el sobreajuste del modelo
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+# observa la perdida de la validacion (error en los datos de prueba)
+# permite 10 epocas sin mejora antes de detener el entrenamiento
+# elije o restablece los mejores pesos cuando el entrenamiento se detiene
+
+# entrenar el modelo
+history = model.fit(X_train, y_train, epochs=100, batch_size=16, validation_data=(X_test, y_test), callbacks=[early_stopping])
+# se le pasan los datos de entrenamiento
+# se ajusta el numero de epocas
+# se ajusta el tamaño del lote (cantidad de datos procesados antes de actualizar los pesos)
+# se usan los datos de prueba para la validacion
+# llama al objeto early stopping para detener el entrenamiento en caso de que no mejore
+
+# evaluar el desempeño en datos de prueba mediante precision y perdida en los datos de prueba
+loss, accuracy = model.evaluate(X_test, y_test, verbose=0) # se oculatan los datos adicionales del entrenamiento
+print(f'Accuracy: {accuracy}') # precision de los datos en el conjunto de prueba
+
+
+# hacer predicciones de los datos
+predicciones = model.predict(X_test) # con el metodo .predict realizamos predicciones con el conjunto de prueba
+predicciones_clase = predicciones.argmax(axis=1) # se guarda en una nueva variable el max valor de las predicciones de las filas
+delitos_predichos = le.inverse_transform(predicciones_clase) 
+# se realiza la transformacion inversa para que los delitos predichos esten en la misma escala o etiqueta original
+#print(delitos_predichos)
+
+# graficar la perdida del entrenamiento y la perdida de la validacion
+plt.figure(figsize=(12, 6))# definimos el tamaño de la figura que contendra la grafica (ancho y alto: pulgadas)
+plt.plot(history.history['loss'], label='Perdida de entrenamiento')
+# usando el metodo .history en el objeto que entrena el modelo obtenemos el comportamiento de este parametro (perdida) de manera visual
+plt.plot(history.history['val_loss'], label='Perdida de validacion')
+# usando el metodo .history en el objeto que entrena el modelo obtenemos el comportamiento de este parametro (perdida) de manera visual
+plt.title('Curva de aprendizaje de la perdida') # se define el titulo
+plt.xlabel('Epocas') # etiqueta del eje x
+plt.ylabel('Perdida o error') # etiqueta del eje y
+plt.legend() # caja de leyenda
+plt.grid(True) # indicamos que queremos que se muestre la cuadricula 
+plt.show() #mostramos la grafica
+
+# graficar la precision durante el entrenamiento del modelo
+plt.figure(figsize=(12, 6))# definimos el tamaño de la figura que contendra la grafica (ancho y alto: pulgadas)
+plt.plot(history.history['accuracy'], label='Precision de entrenamiento')
+# usando el metodo .history en el objeto que entrena el modelo obtenemos el comportamiento de este parametro (precision) de manera visual
+plt.plot(history.history['val_accuracy'], label='Precision de validacion')
+# usando el metodo .history en el objeto que entrena el modelo obtenemos el comportamiento de este parametro (precision ) de manera visual
+plt.title('Curva de aprendizaje de la precision')# se define el titulo
+plt.xlabel('Epocas')# etiqueta del eje x
+plt.ylabel('Precision')# etiqueta del eje y
+plt.legend()# caja de leyenda
+plt.grid(True)# indicamos que queremos que se muestre la cuadricula
+plt.show()#mostramos la grafica
