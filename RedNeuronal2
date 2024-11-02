@@ -1,0 +1,117 @@
+#Red neuronal para predecir tipos de delitos en funcion de caracteristicas como hora, mes, dia, fecha, coordenadas, minutos de medianoche etc
+#PREDICE LA PROBABILIDAD EN UN INTERVALO MAÑANA, TARDE, NOCHE
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.optimizers import Adam
+
+# Cargar el archivo CSV
+df = pd.read_csv("av_limpioyfiltrado.csv", encoding='latin1')
+
+# Filtrar tipos de delitos de interés
+delitos_conservar = [
+    "ACOSO SEXUAL", "DISPAROS DE ARMA DE FUEGO", "FEMINICIDIO", "HOMICIDIO CULPOSO", "LESIONES CULPOSAS",
+    "ROBO A REPARTIDOR Y VEHICULO CON VIOLENCIA", "ROBO A TRANSEUNTE EN VIA PUBLICA CON VIOLENCIA"
+]
+df = df[df['delito'].isin(delitos_conservar)]
+
+# Guardar el CSV filtrado (opcional)
+df.to_csv("delitos_filtrados.csv", index=False)
+
+# Formatear columnas de fecha
+df['fecha'] = pd.to_datetime(df['fecha'], format='%d/%m/%Y')
+
+# Limpiar y convertir la hora
+def limpiar_hora(hora):
+    return pd.to_datetime(hora.replace(" a. m.", " AM").replace(" p. m.", " PM"), format='%I:%M:%S %p', errors='coerce')
+df['hora_limpia'] = df['hora'].apply(limpiar_hora)
+
+# Extraer componentes de fecha y hora
+df['Año'] = df['fecha'].dt.year
+df['Mes'] = df['fecha'].dt.month
+df['Día'] = df['fecha'].dt.day
+df['Día_semana'] = df['fecha'].dt.dayofweek
+df['Minutos_desde_medianoche'] = df['hora_limpia'].dt.hour * 60 + df['hora_limpia'].dt.minute
+
+# Asignar periodo del día
+def periodo_dia(hora):
+    if 5 <= hora < 12:
+        return 'mañana'
+    elif 12 <= hora < 18:
+        return 'tarde'
+    else:
+        return 'noche'
+df['periodo_dia'] = df['hora_limpia'].dt.hour.apply(periodo_dia)
+#se aplica una funcion que tiene como objetivo dividir un dia de 24 horas en 3 intervalos (mañana, tarde y noche)
+
+# Codificar variables
+le = LabelEncoder()
+df['periodo_dia_codificado'] = le.fit_transform(df['periodo_dia'])
+
+# Escalar valores numéricos
+scaler = StandardScaler()
+df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', 'latitud', 'longitud']] = scaler.fit_transform(
+    df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', 'latitud', 'longitud']]
+)
+
+# Dividir datos en conjuntos de entrenamiento y prueba
+X = df[['Año', 'Mes', 'Día', 'Día_semana', 'Minutos_desde_medianoche', "latitud", "longitud"]]
+y = df['periodo_dia_codificado']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Definir el modelo de red neuronal
+model = Sequential()
+model.add(Dense(128, input_dim=X_train.shape[1], activation='relu'))
+model.add(Dropout(0.15))
+model.add(Dense(64, activation='relu'))
+model.add(Dropout(0.1))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(len(le.classes_), activation='softmax'))
+
+# Compilar el modelo
+model.compile(optimizer=Adam(learning_rate=0.0005), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+# Early stopping
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+# Entrenar el modelo
+history = model.fit(X_train, y_train, epochs=100, batch_size=16, validation_data=(X_test, y_test), callbacks=[early_stopping])
+
+# Evaluar el modelo
+loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
+print(f'Accuracy: {accuracy:.4f}')
+
+# Predicciones en formato decimal
+predicciones = model.predict(X_test)
+predicciones_df = pd.DataFrame(predicciones, columns=le.inverse_transform(range(len(le.classes_))))
+
+# Cambiar el formato a decimal
+pd.options.display.float_format = '{:.4f}'.format
+print(predicciones_df.head())
+
+# Graficar la pérdida
+plt.figure(figsize=(12, 6))
+plt.plot(history.history['loss'], label='Perdida de entrenamiento')
+plt.plot(history.history['val_loss'], label='Perdida de validación')
+plt.title('Curva de aprendizaje de la pérdida')
+plt.xlabel('Epocas')
+plt.ylabel('Pérdida')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Graficar la precisión
+plt.figure(figsize=(12, 6))
+plt.plot(history.history['accuracy'], label='Precisión de entrenamiento')
+plt.plot(history.history['val_accuracy'], label='Precisión de validación')
+plt.title('Curva de aprendizaje de la precisión')
+plt.xlabel('Epocas')
+plt.ylabel('Precisión')
+plt.legend()
+plt.grid(True)
+plt.show()
